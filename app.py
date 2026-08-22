@@ -1,7 +1,10 @@
-from flask import Flask, render_template, jsonify, request, redirect, url_for, flash, session
+from flask import Flask, Response, render_template, jsonify, request, redirect, url_for, flash, session, abort
 import sqlite3
+import csv
+import io
 import os
-import secrets
+import re
+import unicodedata
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from flask_wtf import FlaskForm
@@ -13,13 +16,28 @@ from datetime import datetime
 import logging
 from logging.handlers import RotatingFileHandler
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # .envファイルが存在する場合は読み込む（本番環境用）
-if os.path.exists('.env'):
-    with open('.env', 'r') as f:
+env_path = os.path.join(BASE_DIR, '.env')
+if os.path.exists(env_path):
+    with open(env_path, 'r', encoding='utf-8') as f:
         for line in f:
             if line.strip() and not line.startswith('#'):
                 key, value = line.strip().split('=', 1)
                 os.environ[key] = value
+
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+IS_PRODUCTION = os.environ.get('FLASK_ENV') == 'production'
+RANKING_ENABLED = env_flag('ENABLE_RANKING', default=not IS_PRODUCTION)
+DEMO_ADMIN_ENABLED = env_flag('ENABLE_DEMO_ADMIN', default=not IS_PRODUCTION)
 
 app = Flask(__name__)
 
@@ -34,7 +52,18 @@ else:
     app.config['DEBUG'] = True
 
 # データベースファイルのパス
-DB_FILE = os.environ.get('DATABASE_PATH', 'grades.db')
+database_path = os.environ.get('DATABASE_PATH', 'grades.db')
+DB_FILE = database_path if os.path.isabs(database_path) else os.path.join(BASE_DIR, database_path)
+db_directory = os.path.dirname(DB_FILE)
+if db_directory:
+    os.makedirs(db_directory, exist_ok=True)
+
+if IS_PRODUCTION:
+    app.config.update(
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE='Lax',
+    )
 
 # セキュリティヘッダーの設定
 @app.after_request
@@ -49,22 +78,31 @@ def after_request(response):
 
 # ログ設定（本番環境のみ）
 if not app.debug and os.environ.get('FLASK_ENV') == 'production':
-    if not os.path.exists('logs'):
-        os.mkdir('logs')
-    file_handler = RotatingFileHandler('logs/app.log', maxBytes=10240, backupCount=10)
+    logs_directory = os.path.join(BASE_DIR, 'logs')
+    os.makedirs(logs_directory, exist_ok=True)
+    file_handler = RotatingFileHandler(
+        os.path.join(logs_directory, 'app.log'),
+        maxBytes=10240,
+        backupCount=10,
+    )
     file_handler.setFormatter(logging.Formatter(
         '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
     ))
     file_handler.setLevel(logging.INFO)
     app.logger.addHandler(file_handler)
     app.logger.setLevel(logging.INFO)
-    app.logger.info('立命館大学成績管理アプリケーション起動')
+    app.logger.info('成績管理アプリケーション起動')
 
 # Flask-Loginの設定
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'この機能を使用するにはログインしてください。'
+
+
+@app.context_processor
+def inject_app_flags():
+    return {'ranking_enabled': RANKING_ENABLED}
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -96,49 +134,474 @@ def init_db():
         memo TEXT,
         user_id INTEGER
     )''')
+
+    # 講義レビューは成績データと分離し、公開範囲をユーザーが選べるようにする。
+    c.execute('''CREATE TABLE IF NOT EXISTS course_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        course_key TEXT NOT NULL,
+        course_name TEXT NOT NULL,
+        course_code TEXT,
+        instructor TEXT,
+        term TEXT NOT NULL DEFAULT '',
+        difficulty INTEGER NOT NULL,
+        workload INTEGER NOT NULL,
+        attendance TEXT NOT NULL DEFAULT '不明',
+        assessment TEXT,
+        comment TEXT,
+        is_public INTEGER NOT NULL DEFAULT 0,
+        is_reported INTEGER NOT NULL DEFAULT 0,
+        user_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, course_key, term)
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS review_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        review_id INTEGER NOT NULL,
+        reporter_user_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(review_id, reporter_user_id)
+    )''')
     
     conn.commit()
     conn.close()
 
 def create_default_user():
     """アプリケーションの初回起動時に管理者ユーザーを作成する関数"""
+    if IS_PRODUCTION and not DEMO_ADMIN_ENABLED:
+        return
+
+    conn = None
     try:
-        # デフォルトユーザーが存在するか確認
+        # INSERT OR IGNOREで、開発サーバーの再読み込みや複数ワーカー起動にも耐える。
         conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
         c = conn.cursor()
-        c.execute("SELECT * FROM users WHERE user_id = ?", ("admin",))
-        user = c.fetchone()
-        
-        # 存在しない場合は作成
-        if not user:
-            # 本番環境では強力なパスワードを生成
-            if os.environ.get('FLASK_ENV') == 'production':
-                admin_password = os.environ.get('ADMIN_PASSWORD') or secrets.token_urlsafe(16)
-                print(f"🔐 管理者アカウント作成完了")
-                print(f"👤 ユーザーID: admin")
-                print(f"🔑 パスワード: {admin_password}")
-                print(f"⚠️  このパスワードは安全に保管してください")
-            else:
-                admin_password = "admin1234"
-                print("デフォルト管理者ユーザーを作成しました。ユーザーID: admin, パスワード: admin1234")
-                
-            password_hash = generate_password_hash(admin_password)
-            c.execute('''
-                INSERT INTO users (email, name, password_hash, current_year, required_credits, user_id, nickname)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', ("admin@example.com", "管理者", password_hash, 2025, 124.0, "admin", "管理者"))
-            conn.commit()
-        
-        conn.close()
+
+        if os.environ.get('FLASK_ENV') == 'production':
+            admin_password = os.environ.get('ADMIN_PASSWORD')
+            if not admin_password:
+                raise RuntimeError('本番環境ではADMIN_PASSWORDの環境変数が必要です')
+        else:
+            admin_password = "admin1234"
+
+        password_hash = generate_password_hash(admin_password)
+        c.execute('''
+            INSERT OR IGNORE INTO users (email, name, password_hash, current_year, required_credits, user_id, nickname)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', ("admin@example.com", "管理者", password_hash, 2025, 124.0, "admin", "管理者"))
+        if c.rowcount == 1 and os.environ.get('FLASK_ENV') != 'production':
+            print("デフォルト管理者ユーザーを作成しました。ユーザーID: admin, パスワード: admin1234")
+        conn.commit()
     except Exception as e:
-        pass  # エラーは無視（管理者アカウントが既に存在する可能性）
+        app.logger.exception('管理者アカウントの初期化に失敗しました')
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def initialize_database():
+    """開発サーバーとWSGIサーバーの両方でDBを初期化する。"""
+    init_db()
+    create_default_user()
+
+
+# Gunicornなどはこのファイルをimportして起動するため、__main__だけでは初期化されない。
+if os.environ.get('SKIP_DB_INIT') != '1':
+    initialize_database()
 
 # ホームページを表示
 @app.route("/")
 @login_required  # ログインが必要
 def home():
-    return render_template("index.html")
+    return render_template(
+        "index.html",
+        required_credits=float(current_user.required_credits or 124.0),
+    )
+
+
+@app.route('/healthz')
+def healthz():
+    """デプロイ先の稼働確認用エンドポイント。"""
+    return jsonify({'status': 'ok'})
+
+
+@app.route('/api/export_courses')
+@login_required
+def export_courses():
+    """ログイン中のユーザーの成績だけをCSVで出力する。"""
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute('''
+            SELECT year, semester, name, credits, grade, category, memo
+            FROM grades
+            WHERE user_id = ?
+            ORDER BY year IS NULL, year, semester, id
+        ''', (current_user.id,))
+        rows = c.fetchall()
+    finally:
+        conn.close()
+
+    output = io.StringIO(newline='')
+    writer = csv.writer(output)
+    writer.writerow(['年度', '学期', '科目名', '単位数', '評価', 'カテゴリ', 'メモ'])
+    writer.writerows(
+        [
+            row['year'],
+            row['semester'],
+            row['name'],
+            row['credits'],
+            row['grade'],
+            row['category'],
+            row['memo'],
+        ]
+        for row in rows
+    )
+
+    response = Response(
+        chr(0xfeff) + output.getvalue(),
+        content_type='text/csv; charset=utf-8',
+    )
+    response.headers['Content-Disposition'] = 'attachment; filename=seiseki-kanri-courses.csv'
+    return response
+
+
+@app.route('/api/load_demo_data', methods=['POST'])
+@login_required
+def load_demo_data():
+    """ログイン中のユーザーに、画面確認用のダミー成績を追加する。"""
+    demo_courses = [
+        (2024, '春学期', 'データ構造とアルゴリズム', 2.0, 'A+', '基礎専門科目', 'サンプルデータ'),
+        (2024, '秋学期', 'Webアプリケーション開発', 2.0, 'A', '固有専門科目（選択）', 'サンプルデータ'),
+        (2025, '春学期', 'データベース', 2.0, 'B', '基礎専門科目', 'サンプルデータ'),
+        (2025, '春学期', '機械学習', 2.0, 'A', '固有専門科目（選択）', 'サンプルデータ'),
+        (2025, '秋学期', 'ソフトウェア工学', 2.0, 'B', '共通専門科目', 'サンプルデータ'),
+        (2025, '秋学期', '英語コミュニケーション', 2.0, 'C', '外国語', 'サンプルデータ'),
+        (2026, '春学期', '卒業研究', 4.0, 'A+', '固有専門科目（必修）', 'サンプルデータ'),
+        ('', '秋学期', '履修予定科目', 2.0, '', '未分類', 'サンプルデータ（履修予定）'),
+    ]
+
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT COUNT(*) FROM grades WHERE user_id = ?', (current_user.id,))
+        if c.fetchone()[0] > 0:
+            return jsonify({
+                'status': 'error',
+                'message': '既に科目データがあるため、サンプルデータは追加しませんでした。',
+            }), 409
+
+        c.executemany('''
+            INSERT INTO grades (year, semester, name, credits, grade, category, memo, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', [course + (current_user.id,) for course in demo_courses])
+        conn.commit()
+        return jsonify({
+            'status': 'ok',
+            'count': len(demo_courses),
+            'message': 'サンプルデータを追加しました。',
+        })
+    except sqlite3.Error:
+        conn.rollback()
+        app.logger.exception('サンプルデータの追加に失敗しました')
+        return jsonify({
+            'status': 'error',
+            'message': 'サンプルデータの追加に失敗しました。',
+        }), 500
+    finally:
+        conn.close()
+
+
+def normalize_review_text(value):
+    """講義名・科目コードの表記揺れを減らして検索キーを作る。"""
+    normalized = unicodedata.normalize('NFKC', str(value or '')).strip().lower()
+    return re.sub(r'\s+', '', normalized)
+
+
+def make_review_course_key(course_name, course_code):
+    code_key = normalize_review_text(course_code)
+    if code_key:
+        return f'code:{code_key}'
+    return f'name:{normalize_review_text(course_name)}'
+
+
+def parse_review_payload(data):
+    """レビュー入力を検証し、DBへ保存する値に整形する。"""
+    data = data or {}
+    course_name = str(data.get('course_name', '')).strip()
+    course_code = str(data.get('course_code', '')).strip()
+    instructor = str(data.get('instructor', '')).strip()
+    term = str(data.get('term', '')).strip()
+    attendance = str(data.get('attendance', '不明')).strip() or '不明'
+    assessment = str(data.get('assessment', '')).strip()
+    comment = str(data.get('comment', '')).strip()
+
+    if not course_name or len(course_name) > 100:
+        return None, '科目名は1〜100文字で入力してください。'
+    if len(course_code) > 50:
+        return None, '科目コードは50文字以内で入力してください。'
+    if len(instructor) > 80:
+        return None, '担当者名は80文字以内で入力してください。'
+    if len(term) > 40:
+        return None, '開講時期は40文字以内で入力してください。'
+    if attendance not in {'毎回出席', '一部出席', '自由出席', '不明'}:
+        return None, '出席情報の値が不正です。'
+    if len(assessment) > 100:
+        return None, '評価方法は100文字以内で入力してください。'
+    if len(comment) > 500:
+        return None, 'コメントは500文字以内で入力してください。'
+
+    try:
+        difficulty = int(data.get('difficulty', 0))
+        workload = int(data.get('workload', 0))
+    except (TypeError, ValueError):
+        return None, '難易度と課題量は1〜5で入力してください。'
+
+    if not 1 <= difficulty <= 5 or not 1 <= workload <= 5:
+        return None, '難易度と課題量は1〜5で入力してください。'
+
+    return {
+        'course_key': make_review_course_key(course_name, course_code),
+        'course_name': course_name,
+        'course_code': course_code,
+        'instructor': instructor,
+        'term': term,
+        'difficulty': difficulty,
+        'workload': workload,
+        'attendance': attendance,
+        'assessment': assessment,
+        'comment': comment,
+        'is_public': 1 if data.get('is_public') is True else 0,
+    }, None
+
+
+@app.route('/reviews')
+@login_required
+def reviews():
+    return render_template('reviews.html')
+
+
+@app.route('/api/reviews', methods=['GET'])
+@login_required
+def list_reviews():
+    """公開設定された講義レビューを匿名集計して返す。"""
+    query = request.args.get('query', '').strip().lower()
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        conditions = ['is_public = 1', 'is_reported = 0']
+        params = []
+        if query:
+            like_query = f'%{query}%'
+            conditions.append(
+                '(LOWER(course_name) LIKE ? OR LOWER(course_code) LIKE ? OR LOWER(instructor) LIKE ?)'
+            )
+            params.extend([like_query, like_query, like_query])
+
+        c = conn.cursor()
+        c.execute(f'''
+            SELECT
+                course_key,
+                MAX(course_name) AS course_name,
+                MAX(course_code) AS course_code,
+                MAX(instructor) AS instructor,
+                COUNT(*) AS review_count,
+                ROUND(AVG(difficulty), 1) AS average_difficulty,
+                ROUND(AVG(workload), 1) AS average_workload,
+                MAX(updated_at) AS latest_review
+            FROM course_reviews
+            WHERE {' AND '.join(conditions)}
+            GROUP BY course_key
+            ORDER BY review_count DESC, latest_review DESC
+            LIMIT 50
+        ''', params)
+        return jsonify([dict(row) for row in c.fetchall()])
+    finally:
+        conn.close()
+
+
+@app.route('/api/reviews/mine', methods=['GET'])
+@login_required
+def list_my_reviews():
+    """ログイン中のユーザー自身のレビューを公開範囲に関係なく返す。"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute('''
+            SELECT id, course_key, course_name, course_code, instructor, term,
+                   difficulty, workload, attendance, assessment, comment,
+                   is_public, is_reported, updated_at
+            FROM course_reviews
+            WHERE user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 50
+        ''', (current_user.id,))
+        return jsonify([dict(row) for row in c.fetchall()])
+    finally:
+        conn.close()
+
+
+@app.route('/api/reviews/detail', methods=['GET'])
+@login_required
+def review_detail():
+    course_key = request.args.get('course_key', '').strip()
+    if not course_key:
+        return jsonify({'status': 'error', 'message': '講義を指定してください。'}), 400
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        c = conn.cursor()
+        c.execute('''
+            SELECT
+                course_key,
+                MAX(course_name) AS course_name,
+                MAX(course_code) AS course_code,
+                MAX(instructor) AS instructor,
+                COUNT(*) AS review_count,
+                ROUND(AVG(difficulty), 1) AS average_difficulty,
+                ROUND(AVG(workload), 1) AS average_workload
+            FROM course_reviews
+            WHERE course_key = ? AND is_public = 1 AND is_reported = 0
+            GROUP BY course_key
+        ''', (course_key,))
+        aggregate = c.fetchone()
+        if aggregate is None:
+            return jsonify({'status': 'error', 'message': '公開レビューが見つかりません。'}), 404
+
+        c.execute('''
+            SELECT id, course_name, course_code, instructor, term,
+                   difficulty, workload, attendance, assessment, comment, updated_at
+            FROM course_reviews
+            WHERE course_key = ? AND is_public = 1 AND is_reported = 0
+              AND comment IS NOT NULL AND comment != ''
+            ORDER BY updated_at DESC
+            LIMIT 30
+        ''', (course_key,))
+        comments = [dict(row) for row in c.fetchall()]
+
+        c.execute('''
+            SELECT id, course_name, course_code, instructor, term,
+                   difficulty, workload, attendance, assessment, comment,
+                   is_public, is_reported
+            FROM course_reviews
+            WHERE course_key = ? AND user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 20
+        ''', (course_key, current_user.id))
+        own_reviews = [dict(row) for row in c.fetchall()]
+
+        return jsonify({
+            'status': 'ok',
+            'aggregate': dict(aggregate),
+            'comments': comments,
+            'own_reviews': own_reviews,
+        })
+    finally:
+        conn.close()
+
+
+@app.route('/api/reviews', methods=['POST'])
+@login_required
+def save_review():
+    payload, error = parse_review_payload(request.get_json(silent=True))
+    if error:
+        return jsonify({'status': 'error', 'message': error}), 400
+
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        c = conn.cursor()
+        c.execute('''
+            SELECT id FROM course_reviews
+            WHERE user_id = ? AND course_key = ? AND term = ?
+        ''', (current_user.id, payload['course_key'], payload['term']))
+        existing = c.fetchone()
+
+        values = (
+            payload['course_name'], payload['course_code'], payload['instructor'],
+            payload['difficulty'], payload['workload'], payload['attendance'],
+            payload['assessment'], payload['comment'], payload['is_public'],
+        )
+        if existing:
+            c.execute('''
+                UPDATE course_reviews
+                SET course_name = ?, course_code = ?, instructor = ?,
+                    difficulty = ?, workload = ?, attendance = ?,
+                    assessment = ?, comment = ?, is_public = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+            ''', values + (existing[0], current_user.id))
+            review_id = existing[0]
+        else:
+            c.execute('''
+                INSERT INTO course_reviews (
+                    course_key, course_name, course_code, instructor, term,
+                    difficulty, workload, attendance, assessment, comment,
+                    is_public, user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                payload['course_key'], payload['course_name'], payload['course_code'],
+                payload['instructor'], payload['term'], payload['difficulty'],
+                payload['workload'], payload['attendance'], payload['assessment'],
+                payload['comment'], payload['is_public'], current_user.id,
+            ))
+            review_id = c.lastrowid
+        conn.commit()
+        return jsonify({'status': 'ok', 'review_id': review_id})
+    except sqlite3.Error:
+        conn.rollback()
+        app.logger.exception('講義レビューの保存に失敗しました')
+        return jsonify({'status': 'error', 'message': '講義レビューを保存できませんでした。'}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/reviews/<int:review_id>', methods=['DELETE'])
+@login_required
+def delete_review(review_id):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        c = conn.cursor()
+        c.execute(
+            'DELETE FROM course_reviews WHERE id = ? AND user_id = ?',
+            (review_id, current_user.id),
+        )
+        if c.rowcount == 0:
+            return jsonify({'status': 'error', 'message': '削除できるレビューが見つかりません。'}), 404
+        c.execute('DELETE FROM review_reports WHERE review_id = ?', (review_id,))
+        conn.commit()
+        return jsonify({'status': 'ok'})
+    finally:
+        conn.close()
+
+
+@app.route('/api/reviews/<int:review_id>/report', methods=['POST'])
+@login_required
+def report_review(review_id):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT user_id FROM course_reviews WHERE id = ?', (review_id,))
+        review = c.fetchone()
+        if review is None:
+            return jsonify({'status': 'error', 'message': 'レビューが見つかりません。'}), 404
+        if review[0] == current_user.id:
+            return jsonify({'status': 'error', 'message': '自分のレビューは通報できません。'}), 400
+
+        c.execute('''
+            INSERT OR IGNORE INTO review_reports (review_id, reporter_user_id)
+            VALUES (?, ?)
+        ''', (review_id, current_user.id))
+        # 通報されたレビューは、確認が終わるまで公開一覧から外す。
+        c.execute('UPDATE course_reviews SET is_reported = 1 WHERE id = ?', (review_id,))
+        conn.commit()
+        return jsonify({'status': 'ok', 'message': 'レビューを公開一覧から外しました。'})
+    finally:
+        conn.close()
 
 # 成績データを取得するAPI
 @app.route("/api/get_courses", methods=["GET"])
@@ -877,6 +1340,10 @@ class ProfileForm(FlaskForm):
     nickname = StringField('ニックネーム', validators=[DataRequired(), Length(min=2, max=50)])
     email = StringField('メールアドレス（任意）', validators=[Optional(), Email()])
     grade = IntegerField('学年', validators=[Optional(), NumberRange(min=1, max=6, message='1〜6の間で入力してください')])
+    required_credits = FloatField('卒業必要単位数', validators=[
+        DataRequired(message='卒業必要単位数を入力してください'),
+        NumberRange(min=1, max=300, message='1〜300の範囲で入力してください'),
+    ])
     submit = SubmitField('更新')
     
     def __init__(self, original_user_id=None, *args, **kwargs):
@@ -1050,7 +1517,7 @@ def register():
             
             user = User.get_by_id(user_id)
             login_user(user)
-            flash('アカウント登録が完了しました！以下のいずれかの方法で科目を追加して成績管理を始めましょう：1) 上部のフォームから個別に科目を追加、2) 「CAMPUSウェブから取込」で成績データをインポート、または 3) 「複数科目をまとめて追加」で一括登録', 'success')
+            flash('アカウント登録が完了しました！ホーム画面から、1科目の手動追加・複数科目の一括追加・サンプルデータでの確認を始められます。対応形式の成績HTMLも取り込めます。', 'success')
             return redirect(url_for('home'))
         except Exception as e:
             flash(f'登録中にエラーが発生しました: {str(e)}', 'error')
@@ -1074,6 +1541,7 @@ def profile():
         profile_form.nickname.data = current_user.nickname or current_user.name
         profile_form.email.data = current_user.email or ''
         profile_form.grade.data = current_user.current_year
+        profile_form.required_credits.data = current_user.required_credits or 124.0
     
     # パスワード変更フォームの初期化
     password_form = ChangePasswordForm()
@@ -1088,13 +1556,14 @@ def profile():
             c = conn.cursor()
             c.execute('''
                 UPDATE users
-                SET user_id = ?, nickname = ?, email = ?, current_year = ?
+                SET user_id = ?, nickname = ?, email = ?, current_year = ?, required_credits = ?
                 WHERE id = ?
             ''', (
                 profile_form.user_id.data,
                 profile_form.nickname.data,
                 profile_form.email.data,
                 profile_form.grade.data,
+                profile_form.required_credits.data,
                 current_user.id
             ))
             conn.commit()
@@ -1105,6 +1574,7 @@ def profile():
             current_user.nickname = profile_form.nickname.data
             current_user.email = profile_form.email.data
             current_user.current_year = profile_form.grade.data
+            current_user.required_credits = profile_form.required_credits.data
             
             flash('プロフィールが更新されました', 'success')
             return redirect(url_for('profile'))
@@ -1288,6 +1758,9 @@ def get_user_statistics(user_id):
 @login_required
 def get_ranking():
     """全ユーザーのランキングデータを取得する"""
+    if not RANKING_ENABLED:
+        return jsonify({'status': 'error', 'message': 'ランキング機能は現在無効です。'}), 404
+
     try:
         sort_by = request.args.get('sort_by', 'gpa')  # gpa, gps, credits
         grade_filter = request.args.get('grade', 'all')  # 学年フィルタ
@@ -1348,6 +1821,9 @@ def get_ranking():
 @login_required
 def get_my_stats():
     """現在のユーザーの詳細統計を取得する"""
+    if not RANKING_ENABLED:
+        return jsonify({'status': 'error', 'message': 'ランキング機能は現在無効です。'}), 404
+
     try:
         gpa, gps, total_credits = calculate_gpa_gps(current_user.id)
         stats = get_user_statistics(current_user.id)
@@ -1369,6 +1845,9 @@ def get_my_stats():
 @login_required
 def get_distribution_stats():
     """全ユーザーのGPA・GPS分布統計を取得する"""
+    if not RANKING_ENABLED:
+        return jsonify({'status': 'error', 'message': 'ランキング機能は現在無効です。'}), 404
+
     try:
         grade_filter = request.args.get('grade', 'all')  # 学年フィルタ
         
@@ -1474,6 +1953,8 @@ def calculate_distribution(values, metric_type):
 @login_required
 def ranking():
     """ランキングページを表示"""
+    if not RANKING_ENABLED:
+        abort(404)
     return render_template('ranking.html')
 
 # 学年フィルタ用の利用可能な学年一覧を取得するAPIエンドポイント
@@ -1481,6 +1962,9 @@ def ranking():
 @login_required
 def get_available_grades():
     """利用可能な学年一覧を取得する"""
+    if not RANKING_ENABLED:
+        return jsonify({'status': 'error', 'message': 'ランキング機能は現在無効です。'}), 404
+
     try:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -1514,9 +1998,6 @@ def get_available_grades():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == "__main__":
-    init_db()  # アプリケーション起動時にデータベース初期化
-    create_default_user()  # デフォルトユーザーの作成
-    
     # 環境に応じた実行
     if os.environ.get('FLASK_ENV') == 'production':
         print("🚀 本番環境でアプリケーションを起動中...")
@@ -1524,5 +2005,5 @@ if __name__ == "__main__":
     else:
         print("🛠️  開発環境でアプリケーションを起動中...")
         print("📱 外部アクセス（iPhone等）有効")
-        port = int(os.environ.get('FLASK_RUN_PORT', 5001))
+        port = int(os.environ.get('FLASK_RUN_PORT', os.environ.get('PORT', 5001)))
         app.run(host='0.0.0.0', debug=True, port=port)

@@ -1,6 +1,12 @@
-// 立命館大学のカリキュラム要件（単位数）
+// カテゴリ要件は現時点では立命館大学向け。総単位数だけユーザー設定を反映する。
+const configuredTotalCredits = Number(window.appConfig?.requiredCredits);
+const totalRequiredCredits =
+  Number.isFinite(configuredTotalCredits) && configuredTotalCredits > 0
+    ? configuredTotalCredits
+    : 124;
+
 const requirementCredits = {
-  総単位: 124, // 卒業に必要な総単位数
+  総単位: totalRequiredCredits,
   専門科目: 100,
   基礎専門科目: 20,
   共通専門科目: 22,

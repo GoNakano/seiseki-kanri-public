@@ -138,7 +138,10 @@
         >{{ current_user.nickname or current_user.name }} さん</span
       >
       <a href="{{ url_for('home') }}">ホーム</a>
+      {% if ranking_enabled %}
       <a href="{{ url_for('ranking') }}">ランキング</a>
+      {% endif %}
+      <a href="{{ url_for('reviews') }}">講義レビュー</a>
       <a href="{{ url_for('profile') }}">プロフィール</a>
       <a href="{{ url_for('logout') }}">ログアウト</a>
     </div>

@@ -32,6 +32,22 @@ const gradeDistributionChartCtx = document.getElementById(
 let courses = [];
 let editingIndex = -1;
 
+function getRequiredCredits() {
+  const configured = Number(window.appConfig?.requiredCredits);
+  return Number.isFinite(configured) && configured > 0 ? configured : 124;
+}
+
+function formatRequiredCredits(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function updateRequiredCreditsLabels() {
+  const label = formatRequiredCredits(getRequiredCredits());
+  document.querySelectorAll('[data-required-credits]').forEach((element) => {
+    element.textContent = label;
+  });
+}
+
 // GPA計算のための評価ポイント
 const gradePoints = {
   "A+": 5,
@@ -300,7 +316,7 @@ function calculateAndDisplayGPA() {
 }
 
 function calculateAndDisplayTotalCredits() {
-  const requiredCredits = 124; // 必要な単位数（大学によって変更OK）
+  const requiredCredits = getRequiredCredits();
   let totalCredits = 0;
 
   courses.forEach((course, index) => {
@@ -805,10 +821,16 @@ function updateHeaderStats() {
   // 卒業までの残り単位更新
   const headerRemainingEl = document.getElementById("header-remaining");
   if (headerRemainingEl) {
-    const requiredCredits = 124; // デフォルト値、後でユーザー設定から取得可能
+    const requiredCredits = getRequiredCredits();
     let totalCredits = 0;
     courses.forEach((course) => {
-      if (course.grade !== "F" && !isNaN(parseFloat(course.credits))) {
+      if (
+        course.grade !== "F" &&
+        course.grade !== "不可" &&
+        course.year &&
+        course.year !== "" &&
+        !isNaN(parseFloat(course.credits))
+      ) {
         totalCredits += parseFloat(course.credits);
       }
     });
@@ -1023,8 +1045,59 @@ window.startEdit = startEdit;
 window.showNotification = showNotification;
 window.getFilteredAndSortedCourses = getFilteredAndSortedCourses;
 
-// ページ読み込み時にデータを取得
-document.addEventListener("DOMContentLoaded", fetchCourses);
+// ページ読み込み時に設定を反映してからデータを取得
+document.addEventListener("DOMContentLoaded", () => {
+  updateRequiredCreditsLabels();
+  fetchCourses();
+});
+
+// 空状態から初回登録へ進める導線
+document.addEventListener("DOMContentLoaded", () => {
+  const emptyAddCourseButton = document.getElementById("empty-add-course-btn");
+  const emptyDemoButton = document.getElementById("empty-demo-btn");
+  const emptyBulkAddButton = document.getElementById("empty-bulk-add-btn");
+  const emptyCampusImportButton = document.getElementById(
+    "empty-campus-import-btn"
+  );
+
+  if (emptyAddCourseButton) {
+    emptyAddCourseButton.addEventListener("click", () => {
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+      courseNameInput.focus();
+    });
+  }
+
+  if (emptyDemoButton) {
+    emptyDemoButton.addEventListener("click", async () => {
+      emptyDemoButton.disabled = true;
+      try {
+        const response = await fetch("/api/load_demo_data", { method: "POST" });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.message || "サンプルデータを追加できませんでした");
+        }
+        showNotification(result.message, "success");
+        await fetchCourses();
+      } catch (error) {
+        showNotification(error.message, "error");
+      } finally {
+        emptyDemoButton.disabled = false;
+      }
+    });
+  }
+
+  if (emptyBulkAddButton) {
+    emptyBulkAddButton.addEventListener("click", () => {
+      document.getElementById("show-bulk-add-btn")?.click();
+    });
+  }
+
+  if (emptyCampusImportButton) {
+    emptyCampusImportButton.addEventListener("click", () => {
+      document.getElementById("campus-import-btn")?.click();
+    });
+  }
+});
 
 // DOM要素の取得（追加部分）
 const selectAllBtn = document.getElementById("select-all-btn");

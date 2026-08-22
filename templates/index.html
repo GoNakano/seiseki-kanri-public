@@ -35,6 +35,18 @@
     margin: 10px 0;
     line-height: 1.5;
   }
+  .empty-state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin: 20px 0 12px;
+  }
+  .empty-state-note {
+    color: #6c757d;
+    font-size: 0.9rem;
+    margin: 0;
+  }
 
   /* CAMPUSインポート説明のスタイル */
   .campus-import-instructions {
@@ -173,7 +185,7 @@
     </div>
     <div class="stat-card">
       <div class="stat-label">卒業までの残り単位</div>
-      <div class="stat-value" id="header-remaining">124</div>
+      <div class="stat-value" id="header-remaining">{{ required_credits|round(1) }}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">登録科目数</div>
@@ -266,6 +278,14 @@
     >
       <span>🔄 カテゴリ再分類</span>
     </button>
+    <a
+      href="{{ url_for('export_courses') }}"
+      class="action-button secondary"
+      download
+      title="自分の成績データをCSV形式で保存"
+    >
+      <span>CSV出力</span>
+    </a>
   </div>
 </div>
 
@@ -273,12 +293,24 @@
 <div id="empty-course-message" class="empty-state" style="display: none">
   <div class="empty-state-content">
     <h3>科目がまだ登録されていません</h3>
-    <p>以下の方法で科目を追加できます：</p>
-    <ul>
-      <li>上部のフォームから個別に科目を追加</li>
-      <li>「CAMPUSウェブから取込」でCAMPUS成績データをインポート</li>
-      <li>「複数科目をまとめて追加」から複数科目を一括登録</li>
-    </ul>
+    <p>まずは1科目を登録すると、GPAや単位の集計が表示されます。</p>
+    <div class="empty-state-actions">
+      <button type="button" id="empty-add-course-btn" class="action-button primary">
+        1科目を追加
+      </button>
+      <button type="button" id="empty-demo-btn" class="action-button primary">
+        サンプルデータで試す
+      </button>
+      <button type="button" id="empty-bulk-add-btn" class="action-button">
+        複数科目をまとめて追加
+      </button>
+      <button type="button" id="empty-campus-import-btn" class="action-button secondary">
+        対応形式から取り込む
+      </button>
+    </div>
+    <p class="empty-state-note">
+      HTML取込は現在、立命館CAMPUS形式を前提にしています。他大学の成績は手動入力または一括追加を利用してください。
+    </p>
   </div>
 </div>
 
@@ -475,9 +507,9 @@
     </div>
 
     <div class="category-group total-summary">
-      <h4>総合計（124単位必要）</h4>
+      <h4>総合計（<span data-required-credits>{{ required_credits|round(1) }}</span>単位必要）</h4>
       <p>
-        <strong>総単位数: <span id="総単位数-display">0</span>/124 単位</strong>
+        <strong>総単位数: <span id="総単位数-display">0</span>/<span data-required-credits>{{ required_credits|round(1) }}</span> 単位</strong>
       </p>
     </div>
   </div>
@@ -486,7 +518,7 @@
   <div class="requirement-progress">
     <h4>卒業要件進捗</h4>
     <div class="progress-item">
-      <label>総単位数 (124単位必要):</label>
+      <label>総単位数 (<span data-required-credits>{{ required_credits|round(1) }}</span>単位必要):</label>
       <div class="progress-bar-container">
         <div class="progress-bar" id="総単位-progress"></div>
       </div>
@@ -732,6 +764,9 @@
           <div class="step-content">
             <strong>CAMPUSウェブにアクセス</strong>
             <p>「成績・履修照会」→「履修状況確認」→「科目一覧」タブを開く</p>
+            <p>
+              <a href="https://campusweb.ritsumei.ac.jp/" target="_blank" rel="noopener noreferrer">公式CAMPUS WEBを開く</a>
+            </p>
           </div>
         </div>
 
@@ -768,7 +803,7 @@
       </div>
 
       <div class="security-note">
-        🔒 個人情報は端末内で処理され、外部には送信されません
+        注意: 大学ID・パスワードはこのアプリに入力しないでください。成績HTMLは解析APIへ送信されるため、公開デモには貼り付けずローカル利用を推奨します。
       </div>
     </div>
 
@@ -860,6 +895,11 @@
 <!-- JavaScriptファイルを最後に読み込む -->
 {% endblock %} {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  window.appConfig = {
+    requiredCredits: {{ required_credits|default(124)|tojson }}
+  };
+</script>
 <script src="{{ url_for('static', filename='subject_classifier.js') }}"></script>
 <script src="{{ url_for('static', filename='category_utils.js') }}"></script>
 <script src="{{ url_for('static', filename='pagination.js') }}"></script>

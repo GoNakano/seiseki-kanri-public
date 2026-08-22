@@ -180,9 +180,20 @@ endblock %} {% block additional_styles %}
         {{ profile_form.grade.label }} {{
         profile_form.grade(class="form-control") }}
         <small class="form-text"
-          >学年を1〜4の間で入力してください（例：3）</small
+          >学年を1〜6の間で入力してください（例：3）</small
         >
         {% for error in profile_form.grade.errors %}
+        <span class="form-error">{{ error }}</span>
+        {% endfor %}
+      </div>
+
+      <div class="form-group">
+        {{ profile_form.required_credits.label }} {{
+        profile_form.required_credits(class="form-control", step="0.5", min="1", max="300") }}
+        <small class="form-text"
+          >大学・学部の卒業要件に合わせて設定してください。初期値は124単位です。</small
+        >
+        {% for error in profile_form.required_credits.errors %}
         <span class="form-error">{{ error }}</span>
         {% endfor %}
       </div>
