@@ -12,6 +12,17 @@
 
 ---
 
+## 公開デモ
+
+ブラウザから動作を確認できます。
+
+- [成績管理アプリを開く](https://seiseki-kanri.onrender.com/)
+- [稼働確認用エンドポイント](https://seiseki-kanri.onrender.com/healthz)
+
+公開デモはRenderの無料インスタンスで運用しています。初回アクセスに時間がかかる場合があります。実際の成績HTML、大学ID・パスワード、個人情報は入力せず、サンプルデータのみを使用してください。
+
+---
+
 ## 概要
 
 このアプリでは、成績情報を手動入力またはHTML貼り付けによって登録し、以下のような情報を確認できます。
@@ -255,6 +266,8 @@ gunicorn --bind 0.0.0.0:$PORT app:app
 
 - `FLASK_ENV=production`
 - `SECRET_KEY`：推測されにくいランダムな値
+- `ENABLE_RANKING=false`：公開デモではランキングを無効化
+- `ENABLE_DEMO_ADMIN=false`：公開デモでは初期管理者を作成しない
 - `ADMIN_PASSWORD`：`ENABLE_DEMO_ADMIN=true`にする場合のみ、初期管理者用に設定
 
 稼働確認には`/healthz`へアクセスし、`{"status": "ok"}`が返ることを確認します。
