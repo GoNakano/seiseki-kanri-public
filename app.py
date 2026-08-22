@@ -37,7 +37,7 @@ def env_flag(name, default=False):
 
 IS_PRODUCTION = os.environ.get('FLASK_ENV') == 'production'
 RANKING_ENABLED = env_flag('ENABLE_RANKING', default=not IS_PRODUCTION)
-DEMO_ADMIN_ENABLED = env_flag('ENABLE_DEMO_ADMIN', default=not IS_PRODUCTION)
+DEMO_ADMIN_ENABLED = env_flag('ENABLE_DEMO_ADMIN', default=False)
 
 app = Flask(__name__)
 
@@ -168,8 +168,8 @@ def init_db():
     conn.close()
 
 def create_default_user():
-    """アプリケーションの初回起動時に管理者ユーザーを作成する関数"""
-    if IS_PRODUCTION and not DEMO_ADMIN_ENABLED:
+    """明示的に有効化された場合だけ初期管理者ユーザーを作成する。"""
+    if not DEMO_ADMIN_ENABLED:
         return
 
     conn = None
@@ -178,20 +178,19 @@ def create_default_user():
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
 
-        if os.environ.get('FLASK_ENV') == 'production':
-            admin_password = os.environ.get('ADMIN_PASSWORD')
-            if not admin_password:
-                raise RuntimeError('本番環境ではADMIN_PASSWORDの環境変数が必要です')
-        else:
-            admin_password = "admin1234"
+        admin_password = os.environ.get('ADMIN_PASSWORD')
+        if not admin_password:
+            raise RuntimeError(
+                'ENABLE_DEMO_ADMIN=true の場合は ADMIN_PASSWORD の環境変数が必要です'
+            )
 
         password_hash = generate_password_hash(admin_password)
         c.execute('''
             INSERT OR IGNORE INTO users (email, name, password_hash, current_year, required_credits, user_id, nickname)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', ("admin@example.com", "管理者", password_hash, 2025, 124.0, "admin", "管理者"))
-        if c.rowcount == 1 and os.environ.get('FLASK_ENV') != 'production':
-            print("デフォルト管理者ユーザーを作成しました。ユーザーID: admin, パスワード: admin1234")
+        if c.rowcount == 1:
+            app.logger.info('デフォルト管理者ユーザーを作成しました。')
         conn.commit()
     except Exception as e:
         app.logger.exception('管理者アカウントの初期化に失敗しました')
