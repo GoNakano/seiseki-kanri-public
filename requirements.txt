@@ -11,6 +11,6 @@ beautifulsoup4==4.12.2
 Werkzeug==3.1.8
 
 # Production server (optional)
-gunicorn==26.1.0
+gunicorn==26.2.0
 
 email-validator==2.3.0
