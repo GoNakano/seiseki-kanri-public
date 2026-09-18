@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}講義レビュー | 成績管理アプリ{% endblock %}
+{% block additional_styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='reviews.css') }}" />
+{% endblock %}
+{% block content %}
+<div class="reviews-page">
+  <header class="reviews-header">
+    <div>
+      <p class="eyebrow">COURSE INSIGHTS</p>
+      <h1>講義レビュー</h1>
+      <p>難易度・課題量・出席・評価方法を共有して、次の履修計画に活かします。</p>
+    </div>
+    <a class="action-button secondary" href="{{ url_for('home') }}">成績管理へ戻る</a>
+  </header>
+
+  <div class="review-notice">
+    <strong>公開範囲を選べます。</strong>
+    公開を選んだレビューは、ユーザー名を表示せず集計・コメントを他ユーザーに共有します。
+    個人情報や、担当者を攻撃する内容は書かないでください。通報されたレビューは公開一覧から外れます。
+  </div>
+
+  <div class="reviews-layout">
+    <section class="review-panel review-form-panel" aria-labelledby="review-form-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">YOUR REVIEW</p>
+          <h2 id="review-form-title">講義を評価する</h2>
+        </div>
+        <span id="review-mode-label" class="mode-label">新規入力</span>
+      </div>
+
+      <form id="review-form">
+        <input type="hidden" id="review-id" />
+        <label for="review-course-name">科目名 <span class="required-mark">必須</span></label>
+        <input id="review-course-name" name="course_name" type="text" maxlength="100" required placeholder="例：データ構造とアルゴリズム" />
+
+        <div class="form-grid two-columns">
+          <div>
+            <label for="review-course-code">科目コード</label>
+            <input id="review-course-code" name="course_code" type="text" maxlength="50" placeholder="例：CS101" />
+          </div>
+          <div>
+            <label for="review-instructor">担当者名</label>
+            <input id="review-instructor" name="instructor" type="text" maxlength="80" placeholder="任意" />
+          </div>
+        </div>
+
+        <label for="review-term">開講時期</label>
+        <input id="review-term" name="term" type="text" maxlength="40" placeholder="例：2026年度 春学期" />
+
+        <div class="form-grid two-columns">
+          <div>
+            <label for="review-difficulty">難易度</label>
+            <select id="review-difficulty" name="difficulty" required>
+              <option value="1">1: かなり楽</option>
+              <option value="2">2: やや楽</option>
+              <option value="3" selected>3: 普通</option>
+              <option value="4">4: やや難しい</option>
+              <option value="5">5: かなり難しい</option>
+            </select>
+          </div>
+          <div>
+            <label for="review-workload">課題量</label>
+            <select id="review-workload" name="workload" required>
+              <option value="1">1: ほぼなし</option>
+              <option value="2">2: 少ない</option>
+              <option value="3" selected>3: 普通</option>
+              <option value="4">4: 多い</option>
+              <option value="5">5: かなり多い</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-grid two-columns">
+          <div>
+            <label for="review-attendance">出席</label>
+            <select id="review-attendance" name="attendance">
+              <option value="不明" selected>不明</option>
+              <option value="毎回出席">毎回出席</option>
+              <option value="一部出席">一部出席</option>
+              <option value="自由出席">自由出席</option>
+            </select>
+          </div>
+          <div>
+            <label for="review-assessment">評価方法</label>
+            <input id="review-assessment" name="assessment" type="text" maxlength="100" placeholder="例：試験70%・レポート30%" />
+          </div>
+        </div>
+
+        <label for="review-comment">コメント</label>
+        <textarea id="review-comment" name="comment" maxlength="500" rows="5" placeholder="授業の進め方、準備量、役に立った点など"></textarea>
+        <div class="character-count"><span id="comment-count">0</span>/500</div>
+
+        <label class="public-toggle" for="review-public">
+          <input id="review-public" name="is_public" type="checkbox" />
+          匿名レビューとして他ユーザーに公開する
+        </label>
+
+        <div class="review-form-actions">
+          <button class="action-button primary" type="submit">レビューを保存</button>
+          <button class="action-button" id="reset-review-btn" type="button">クリア</button>
+          <button class="action-button danger" id="delete-review-btn" type="button" disabled>自分のレビューを削除</button>
+        </div>
+        <p id="review-form-message" class="form-message" role="status"></p>
+      </form>
+    </section>
+
+    <section class="review-panel review-browser-panel" aria-labelledby="review-browser-title">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">COMMUNITY SIGNALS</p>
+          <h2 id="review-browser-title">みんなの評価を見る</h2>
+        </div>
+        <button class="action-button" id="refresh-reviews-btn" type="button">更新</button>
+      </div>
+
+      <div class="review-search">
+        <label class="visually-hidden" for="review-search-input">講義を検索</label>
+        <input id="review-search-input" type="search" placeholder="科目名・コード・担当者で検索" />
+        <button class="action-button primary" id="search-reviews-btn" type="button">検索</button>
+      </div>
+
+      <div id="review-list" class="review-list" aria-live="polite"></div>
+      <details class="my-reviews-details">
+        <summary>自分のレビューを管理する</summary>
+        <div id="my-review-list" class="review-list"></div>
+      </details>
+      <div id="review-detail" class="review-detail" hidden></div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='reviews.js') }}"></script>
+{% endblock %}
