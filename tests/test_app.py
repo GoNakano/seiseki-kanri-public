@@ -9,7 +9,7 @@ os.environ["SECRET_KEY"] = "test-secret-key"
 os.environ["SKIP_DB_INIT"] = "1"
 os.environ["DATABASE_PATH"] = os.path.join(TEST_DIR.name, "test.db")
 
-from app import DB_FILE, app, initialize_database
+from app import DB_FILE, app, calculate_gpa_gps, get_user_statistics, initialize_database
 
 app.config.update(TESTING=True, WTF_CSRF_ENABLED=False)
 initialize_database()
@@ -54,6 +54,7 @@ class AppSmokeTest(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
 
         self.register_user("demouser", "Demo User")
+        self.assertEqual(self.client.get("/").status_code, 200)
         response = self.client.post("/api/load_demo_data")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["count"], 8)
@@ -172,6 +173,64 @@ class AppSmokeTest(unittest.TestCase):
         response = self.client.get("/api/reviews?query=Private")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), [])
+
+    def test_weighted_gpa_and_earned_credits_with_dummy_grades(self):
+        self.register_user("gpauser", "GPA User")
+        conn = sqlite3.connect(DB_FILE)
+        user_id = conn.execute(
+            "SELECT id FROM users WHERE user_id = ?", ("gpauser",)
+        ).fetchone()[0]
+        conn.executemany(
+            "INSERT INTO grades (year, name, credits, grade, user_id) VALUES (?, ?, ?, ?, ?)",
+            [
+                (2026, "Course A", 2, "A", user_id),
+                (2026, "Course F", 1, "F", user_id),
+                (2026, "Course A+", 2, "A+", user_id),
+                (None, "Year Unknown", 1, "B", user_id),
+                (2026, "Unsupported Grade", 2, "S", user_id),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        # F and unknown-year courses affect GPA; unsupported grades do not.
+        self.assertEqual(calculate_gpa_gps(user_id), (3.5, 21.0, 4))
+        stats = get_user_statistics(user_id)
+        self.assertEqual(stats["yearly_stats"], [
+            {"year": 2026, "courses": 3, "credits": 4.0, "avg_gpa": 3.6}
+        ])
+        self.assertEqual(
+            {row["grade"] for row in stats["grade_distribution"]},
+            {"A+", "A", "B", "F"},
+        )
+
+    def test_campus_html_preview_parses_dummy_course(self):
+        self.register_user("htmluser", "HTML User")
+        html = """<table class="campusTable">
+            <tr><th>区分</th><th>科目名</th></tr>
+            <tr><td>未分類</td><td>53012 テスト科目 *</td>
+                <td></td><td></td><td>2.0</td><td>A</td>
+                <td>2026</td><td>春学期</td></tr>
+        </table>"""
+        response = self.client.post("/api/parse_campus_html", json={"html": html})
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "success")
+        self.assertEqual(len(payload["courses"]), 1)
+        course = payload["courses"][0]
+        self.assertEqual(course["name"], "テスト科目")
+        self.assertEqual(course["credits"], 2.0)
+        self.assertEqual(course["grade"], "A")
+        self.assertEqual(course["year"], 2026)
+
+    def test_campus_html_preview_rejects_missing_table(self):
+        self.register_user("badhtml", "Bad HTML User")
+        response = self.client.post("/api/parse_campus_html", json={"html": ""})
+        self.assertEqual(response.status_code, 400)
+        response = self.client.post(
+            "/api/parse_campus_html", json={"html": "<div>no table</div>"}
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

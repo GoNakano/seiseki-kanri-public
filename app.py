@@ -1666,13 +1666,12 @@ def calculate_gpa_gps(user_id):
         
         # 成績のポイント換算表（ホームページと統一）
         grade_points = {
-            'A+': 5.0, 'A': 4.0, 'B': 3.0, 'C': 2.0, 'F': 0.0,
-            'S': 5.0, '秀': 5.0, '優': 4.0, '良': 3.0, '可': 2.0, '不可': 0.0
+            'A+': 5.0, 'A': 4.0, 'B': 3.0, 'C': 2.0, 'F': 0.0
         }
         
         total_credits = 0  # GPA計算用の総単位数（F評価含む）
         total_grade_points = 0.0
-        earned_credits = 0  # 修得単位数（F/不可/年度不明を除外）
+        earned_credits = 0  # 修得単位数（F/年度不明を除外）
         
         for grade_row in grades:
             grade = grade_row['grade']
@@ -1685,8 +1684,8 @@ def calculate_gpa_gps(user_id):
                 total_credits += credits
                 total_grade_points += point * credits
                 
-                # 取得単位数にはF評価、不可評価、年度不明を含めない
-                if grade not in ['F', '不可'] and year is not None and year != '':
+                # 取得単位数にはF評価と年度不明を含めない
+                if grade != 'F' and year is not None and year != '':
                     earned_credits += credits
         
         if total_credits == 0:
@@ -1706,19 +1705,20 @@ def get_user_statistics(user_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     try:
-        # 年度別の成績統計（未修得単位と年度不明を除外）
+        # 年度別GPAも単位数で加重し、取得単位からF評価を除外する。
         c.execute('''
-            SELECT year, COUNT(*) as courses, 
-                   SUM(CASE WHEN grade NOT IN ('F', '不可') AND year IS NOT NULL AND year != '' THEN credits ELSE 0 END) as credits,
-                   AVG(CASE 
-                       WHEN grade IN ('A+', 'S', '秀') THEN 5.0
-                       WHEN grade IN ('A', '優') THEN 4.0
-                       WHEN grade IN ('B', '良') THEN 3.0
-                       WHEN grade IN ('C', '可') THEN 2.0
+            SELECT year, COUNT(*) as courses,
+                   SUM(CASE WHEN grade != 'F' THEN credits ELSE 0 END) as credits,
+                   ROUND(SUM(CASE grade
+                       WHEN 'A+' THEN 5.0
+                       WHEN 'A' THEN 4.0
+                       WHEN 'B' THEN 3.0
+                       WHEN 'C' THEN 2.0
                        ELSE 0.0
-                   END) as avg_gpa
-            FROM grades 
-            WHERE user_id = ? AND grade IS NOT NULL AND grade != "" AND year IS NOT NULL AND year != ""
+                   END * credits) / SUM(credits), 2) as avg_gpa
+            FROM grades
+            WHERE user_id = ? AND grade IN ('A+', 'A', 'B', 'C', 'F')
+              AND credits > 0 AND year IS NOT NULL AND year != ""
             GROUP BY year
             ORDER BY year
         ''', (user_id,))
@@ -1728,7 +1728,7 @@ def get_user_statistics(user_id):
         c.execute('''
             SELECT grade, COUNT(*) as count
             FROM grades 
-            WHERE user_id = ? AND grade IS NOT NULL AND grade != ""
+            WHERE user_id = ? AND grade IN ('A+', 'A', 'B', 'C', 'F') AND credits > 0
             GROUP BY grade
         ''', (user_id,))
         grade_distribution = c.fetchall()
@@ -1736,9 +1736,10 @@ def get_user_statistics(user_id):
         # カテゴリ別統計（未修得単位と年度不明を除外）
         c.execute('''
             SELECT category, COUNT(*) as courses, 
-                   SUM(CASE WHEN grade NOT IN ('F', '不可') AND year IS NOT NULL AND year != '' THEN credits ELSE 0 END) as credits
-            FROM grades 
-            WHERE user_id = ? AND category IS NOT NULL AND category != ""
+                   SUM(CASE WHEN grade != 'F' AND year IS NOT NULL AND year != '' THEN credits ELSE 0 END) as credits
+            FROM grades
+            WHERE user_id = ? AND grade IN ('A+', 'A', 'B', 'C', 'F') AND credits > 0
+              AND category IS NOT NULL AND category != ""
             GROUP BY category
         ''', (user_id,))
         category_stats = c.fetchall()

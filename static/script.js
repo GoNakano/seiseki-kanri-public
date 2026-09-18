@@ -62,12 +62,12 @@ function calculateGPS() {
   let gps = 0;
 
   courses.forEach((course) => {
+    const grade = course.grade;
+    const credits = Number(course.credits);
     if (
-      gradePoints.hasOwnProperty(course.grade) &&
-      !isNaN(parseFloat(course.credits))
+      gradePoints.hasOwnProperty(grade) && Number.isFinite(credits) && credits > 0
     ) {
-      const credits = parseFloat(course.credits);
-      gps += gradePoints[course.grade] * credits;
+      gps += gradePoints[grade] * credits;
     }
   });
 
@@ -284,16 +284,13 @@ function calculateAndDisplayGPA() {
   let totalCredits = 0;
 
   courses.forEach((course) => {
-    // gradePointsに存在する評価かつ、数値の単位数のみ計算対象
-    // 評価Fも含めてGPA計算を行う
+    const grade = course.grade;
+    const credits = Number(course.credits);
+    // Fも分母に含める。5段階以外の評価や無効な単位数は計算しない。
     if (
-      gradePoints.hasOwnProperty(course.grade) &&
-      !isNaN(parseFloat(course.credits))
+      gradePoints.hasOwnProperty(grade) && Number.isFinite(credits) && credits > 0
     ) {
-      const credits = parseFloat(course.credits);
-      totalPoints += gradePoints[course.grade] * credits;
-
-      // GPA計算には落単（F評価）も含める（分母にも入れる）
+      totalPoints += gradePoints[grade] * credits;
       totalCredits += credits;
     }
   });
@@ -317,27 +314,9 @@ function calculateAndDisplayGPA() {
 
 function calculateAndDisplayTotalCredits() {
   const requiredCredits = getRequiredCredits();
-  let totalCredits = 0;
-
-  courses.forEach((course, index) => {
-    // 評価F、不可、年度不明は取得単位に含めない
-    if (
-      course.grade === "F" ||
-      course.grade === "不可" ||
-      !course.year ||
-      course.year === ""
-    ) {
-      return;
-    }
-
-    const raw = course.credits;
-    const c = parseFloat(raw);
-    if (!isNaN(c)) {
-      totalCredits += c;
-    } else {
-      console.warn(`⚠️ 無効な単位数データ: index=${index}, credits=${raw}`);
-    }
-  });
+  const totalCredits = courses.reduce(
+    (sum, course) => sum + earnedCreditsForCourse(course), 0
+  );
 
   const statusEl = document.getElementById("credit-status");
   if (!statusEl) {
@@ -348,12 +327,12 @@ function calculateAndDisplayTotalCredits() {
   const remaining = requiredCredits - totalCredits;
 
   if (remaining <= 0) {
-    statusEl.innerHTML = `🎉 卒業条件を達成しています！（合計 ${totalCredits} 単位）<br><small>※ F評価・不可評価・年度不明の科目は単位として認定されませんが、GPAにはグレードポイント0として計算されます（年度不明は除く）</small>`;
+    statusEl.innerHTML = `🎉 卒業条件を達成しています！（合計 ${totalCredits} 単位）<br><small>※ F・不可・年度不明は取得単位に含めません。GPAは5段階評価のみを対象とし、年度不明も含めて計算します。</small>`;
     statusEl.style.color = "green";
   } else {
     statusEl.innerHTML = `📚 合計 ${totalCredits} 単位（あと ${remaining.toFixed(
       1
-    )} 単位で卒業条件に到達）<br><small>※ F評価・不可評価・年度不明の科目は単位として認定されませんが、GPAにはグレードポイント0として計算されます（年度不明は除く）</small>`;
+    )} 単位で卒業条件に到達）<br><small>※ F・不可・年度不明は取得単位に含めません。GPAは5段階評価のみを対象とし、年度不明も含めて計算します。</small>`;
     statusEl.style.color = "red";
   }
 
@@ -431,7 +410,14 @@ function updateGpaTrendChart() {
   // 年度ごとのGPAを計算
   const gpaByYear = {};
   courses.forEach((course) => {
-    if (!course.year || !course.grade || !course.credits) return;
+    const grade = course.grade;
+    const credits = Number(course.credits);
+    if (
+      !course.year ||
+      !gradePoints.hasOwnProperty(grade) ||
+      !Number.isFinite(credits) ||
+      credits <= 0
+    ) return;
 
     // 評価Fも含めてGPA計算を行う
     const year = course.year;
@@ -442,8 +428,7 @@ function updateGpaTrendChart() {
       };
     }
 
-    const points = gradePoints[course.grade] || 0;
-    const credits = parseFloat(course.credits);
+    const points = gradePoints[grade];
     gpaByYear[year].totalPoints += points * credits;
 
     // GPA計算には落単（F評価）も含める（分母にも入れる）
@@ -803,18 +788,9 @@ function updateHeaderStats() {
   // 総取得単位数更新
   const headerCreditsEl = document.getElementById("header-credits");
   if (headerCreditsEl) {
-    let totalCredits = 0;
-    courses.forEach((course) => {
-      if (
-        course.grade !== "F" &&
-        course.grade !== "不可" &&
-        course.year &&
-        course.year !== "" &&
-        !isNaN(parseFloat(course.credits))
-      ) {
-        totalCredits += parseFloat(course.credits);
-      }
-    });
+    const totalCredits = courses.reduce(
+      (sum, course) => sum + earnedCreditsForCourse(course), 0
+    );
     headerCreditsEl.textContent = totalCredits.toString();
   }
 
@@ -822,18 +798,9 @@ function updateHeaderStats() {
   const headerRemainingEl = document.getElementById("header-remaining");
   if (headerRemainingEl) {
     const requiredCredits = getRequiredCredits();
-    let totalCredits = 0;
-    courses.forEach((course) => {
-      if (
-        course.grade !== "F" &&
-        course.grade !== "不可" &&
-        course.year &&
-        course.year !== "" &&
-        !isNaN(parseFloat(course.credits))
-      ) {
-        totalCredits += parseFloat(course.credits);
-      }
-    });
+    const totalCredits = courses.reduce(
+      (sum, course) => sum + earnedCreditsForCourse(course), 0
+    );
     const remaining = Math.max(0, requiredCredits - totalCredits);
     headerRemainingEl.textContent = remaining.toString();
   }
@@ -1237,8 +1204,8 @@ function calculateAndDisplayGradeDistribution() {
       // 合計にも加算
       gradeSummary.total.count++;
 
-      // F評価は単位として認められないので、合計単位には加算しない
-      if (grade !== "F") {
+      // 取得済みの科目だけを合計単位に加算する
+      if (earnedCreditsForCourse(course) > 0) {
         gradeSummary.total.credits += credits;
       }
     }

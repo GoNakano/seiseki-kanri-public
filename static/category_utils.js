@@ -15,6 +15,20 @@ const requirementCredits = {
   教養科目: 14,
 };
 
+// 取得単位は、年度があり5段階評価で合格した科目だけを数える。
+function earnedCreditsForCourse(course) {
+  const credits = Number(course.credits);
+  if (
+    !course.year ||
+    !["A+", "A", "B", "C"].includes(course.grade) ||
+    !Number.isFinite(credits) ||
+    credits <= 0
+  ) {
+    return 0;
+  }
+  return credits;
+}
+
 // カテゴリ別単位数を計算して表示する関数
 function calculateCategoryCredits() {
   // カテゴリグループの定義
@@ -55,7 +69,8 @@ function calculateCategoryCredits() {
   // コースをループして各カテゴリの単位数を計算
   courses.forEach((course) => {
     const category = course.category || "未分類";
-    const credits = parseFloat(course.credits) || 0;
+    const credits = Number(course.credits);
+    if (!Number.isFinite(credits) || credits <= 0) return;
 
     // F評価・不可評価は卒業要件進捗から除外（単位として認められない）
     const isFailedGrade = course.grade === "F" || course.grade === "不可";
@@ -83,8 +98,8 @@ function calculateCategoryCredits() {
             break;
           }
         }
-      } else {
-        // 取得済み科目として追加
+      } else if (earnedCreditsForCourse(course) > 0) {
+        // 5段階評価で合格した科目だけを取得済みとして追加
         if (categoryCredits.hasOwnProperty(category)) {
           categoryCredits[category] += credits;
         }
@@ -125,18 +140,10 @@ function calculateCategoryCredits() {
     }
   }
 
-  // 総単位数を表示（F評価、不可評価、年度不明を除外）
-  const totalCredits = courses.reduce((sum, course) => {
-    // F評価、不可評価、年度不明の科目は単位として認められないため除外
-    if (
-      course.grade === "F" ||
-      course.grade === "不可" ||
-      !course.year ||
-      course.year === ""
-    )
-      return sum;
-    return sum + (parseFloat(course.credits) || 0);
-  }, 0);
+  // 総取得単位数も同じ判定で集計する。
+  const totalCredits = courses.reduce(
+    (sum, course) => sum + earnedCreditsForCourse(course), 0
+  );
 
   const totalElement = document.getElementById("総単位数-display");
   if (totalElement) {
